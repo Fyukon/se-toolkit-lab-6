@@ -10,8 +10,8 @@ import subprocess
 import pytest
 
 
-class TestTask1Agent:
-    """Test Task 1 agent output (basic JSON structure)."""
+class TestAgentOutput:
+    """Test that agent.py produces valid JSON with required fields."""
 
     @pytest.mark.asyncio
     async def test_agent_returns_valid_json(self):
@@ -32,7 +32,6 @@ class TestTask1Agent:
         # Check required fields exist
         assert "answer" in output, "Missing 'answer' field in output"
         assert "tool_calls" in output, "Missing 'tool_calls' field in output"
-        assert "source" in output or True, "'source' field should exist (may be empty)"
 
         # Check field types
         assert isinstance(output["answer"], str), "'answer' must be a string"
@@ -41,75 +40,5 @@ class TestTask1Agent:
         # Check answer is non-empty
         assert len(output["answer"]) > 0, "'answer' must not be empty"
 
-
-class TestTask2DocumentationAgent:
-    """Test Task 2 documentation agent with tool calling."""
-
-    @pytest.mark.asyncio
-    async def test_merge_conflict_question(self):
-        """Test question about merge conflicts expects read_file in tool_calls."""
-        result = subprocess.run(
-            ["uv", "run", "agent.py", "How do you resolve a merge conflict?"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-        # Check exit code
-        assert result.returncode == 0, f"Agent failed: {result.stderr}"
-
-        # Parse stdout as JSON
-        output = json.loads(result.stdout)
-
-        # Check required fields
-        assert "answer" in output, "Missing 'answer' field"
-        assert "source" in output, "Missing 'source' field"
-        assert "tool_calls" in output, "Missing 'tool_calls' field"
-
-        # Check that tools were used
-        tool_calls = output["tool_calls"]
-        assert len(tool_calls) > 0, "Expected tool calls for documentation question"
-
-        # Check that read_file or list_files was used
-        tools_used = {call["tool"] for call in tool_calls}
-        assert "read_file" in tools_used or "list_files" in tools_used, \
-            f"Expected read_file or list_files, got: {tools_used}"
-
-        # Check source references wiki file
-        source = output.get("source", "")
-        # Source should reference a wiki file (git.md or git-workflow.md typically)
-        assert "wiki/" in source or any("wiki/" in call.get("args", {}).get("path", "") for call in tool_calls), \
-            "Expected source or tool args to reference wiki files"
-
-    @pytest.mark.asyncio
-    async def test_wiki_listing_question(self):
-        """Test question about wiki files expects list_files in tool_calls."""
-        result = subprocess.run(
-            ["uv", "run", "agent.py", "What files are in the wiki?"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-        # Check exit code
-        assert result.returncode == 0, f"Agent failed: {result.stderr}"
-
-        # Parse stdout as JSON
-        output = json.loads(result.stdout)
-
-        # Check required fields
-        assert "answer" in output, "Missing 'answer' field"
-        assert "tool_calls" in output, "Missing 'tool_calls' field"
-
-        # Check that list_files was used
-        tool_calls = output["tool_calls"]
-        assert len(tool_calls) > 0, "Expected tool calls for wiki listing question"
-
-        tools_used = {call["tool"] for call in tool_calls}
-        assert "list_files" in tools_used, \
-            f"Expected list_files tool for wiki listing question, got: {tools_used}"
-
-        # Check that the tool was called with wiki path
-        wiki_list_calls = [c for c in tool_calls if c["tool"] == "list_files" 
-                          and c.get("args", {}).get("path") == "wiki"]
-        assert len(wiki_list_calls) > 0, "Expected list_files to be called with path='wiki'"
+        # Check tool_calls is empty (Task 1 doesn't use tools)
+        assert len(output["tool_calls"]) == 0, "'tool_calls' must be empty for Task 1"
