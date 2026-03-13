@@ -94,10 +94,11 @@ The system prompt must guide the LLM to choose the right tool:
 You are a documentation and system assistant with access to:
 1. list_files - List files in a directory
 2. read_file - Read contents of a file
-3. query_api - Call the deployed backend API
+3. search_file - Search for text in a file
+4. query_api - Call the deployed backend API
 
 When to use each tool:
-- Use list_files/read_file for wiki documentation questions
+- Use list_files/read_file/search_file for wiki documentation questions
 - Use query_api for:
   - System facts (framework, ports, status codes)
   - Data queries (item count, scores, analytics)
@@ -123,6 +124,10 @@ The loop remains the same as Task 2, just with one more tool:
 3. If tool call → execute, append result, continue
 4. If answer → return with source
 
+Additional features:
+- Loop detection to prevent infinite cycles
+- Answer generation from tool results when LLM fails
+
 ## Path Security
 
 Keep the existing `is_safe_path()` function for `read_file` and `list_files`.
@@ -135,54 +140,60 @@ The `query_api` tool doesn't need path security (API handles its own auth).
 
 Run `uv run run_eval.py` to see baseline performance.
 
-### Expected Failures
+### Current Status
 
-1. **Wiki questions** — should work (Task 2 already handles these)
-2. **System facts** — may fail if LLM doesn't know when to use `query_api`
-3. **Data queries** — will fail until `query_api` is implemented correctly
-4. **Bug diagnosis** — may require multi-step reasoning
+- Question 1 (wiki branch protection): Agent finds info but LLM doesn't generate proper answer
+- Question 2 (framework): Agent needs to read backend source code
+- Question 3 (item count): Agent needs to use correct API endpoint `/items/`
+
+### Known Issues
+
+1. **LLM doesn't follow JSON format strictly** - Parser now handles multiple formats
+2. **LLM zацикливается на repeated tool calls** - Added loop detection
+3. **LLM doesn't know API endpoints** - Need to improve system prompt or add API discovery
 
 ### Iteration Strategy
 
-1. Fix `query_api` implementation first
-2. Improve system prompt if LLM doesn't choose the right tool
-3. Add better error handling for API failures
-4. Adjust tool descriptions if LLM misunderstands parameters
+1. Improve system prompt with API endpoint examples
+2. Add better loop detection and recovery
+3. Consider adding API schema documentation for the LLM
 
 ## Testing
 
 Add 2 new regression tests:
 
 1. **System fact question:** "What framework does the backend use?"
-   - Expected: `read_file` tool (to read pyproject.toml or wiki)
+   - Expected: `read_file` tool (to read pyproject.toml or backend source)
 
 2. **Data query question:** "How many items are in the database?"
    - Expected: `query_api` tool with GET /items/
 
 ## Implementation Steps
 
-1. Create `plans/task-3.md` (this file)
-2. Update `.env.docker.secret` with `LMS_API_KEY`
-3. Update `load_config()` to read both `.env` files
-4. Implement `query_api()` tool
-5. Add `query_api` to `TOOL_FUNCTIONS`
-6. Update `SYSTEM_PROMPT` to include `query_api`
-7. Update `AGENT.md` documentation
-8. Add 2 regression tests
-9. Run `run_eval.py` and iterate
-10. Commit plan first, then code
+1. Create `plans/task-3.md` (this file) ✅
+2. Update `.env.docker.secret` with `LMS_API_KEY` and `AGENT_API_BASE_URL` ✅
+3. Update `load_config()` to read both `.env` files ✅
+4. Implement `query_api()` tool ✅
+5. Add `query_api` to `TOOL_FUNCTIONS` ✅
+6. Add `search_file` tool for large file searching ✅
+7. Update `SYSTEM_PROMPT` to include all tools ✅
+8. Add loop detection ✅
+9. Update `AGENT.md` documentation
+10. Add 2 regression tests
+11. Run `run_eval.py` and iterate
+12. Commit plan first, then code
 
 ## Output Format
 
 ```json
 {
-  "answer": "There are 120 items in the database.",
+  "answer": "There are 44 items in the database.",
   "source": "API: GET /items/",
   "tool_calls": [
     {
       "tool": "query_api",
       "args": {"method": "GET", "path": "/items/"},
-      "result": "{\"status_code\": 200, \"body\": {...}}"
+      "result": "{\"status_code\": 200, \"body\": [...]}"
     }
   ]
 }
