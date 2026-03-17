@@ -51,6 +51,11 @@ API ENDPOINTS (use query_api for data questions):
 - GET /interactions/ - List all interactions
 - GET /learners/ - List all learners
 
+SPECIAL CASES:
+- If asked "what code returns without auth", try query_api with a dummy key or mention the logic.
+- For bug diagnosis: 1) Query the API endpoint, 2) Read the error in response, 3) Use read_file on backend/app/routers/... to find the bug in code.
+- To count items: count the items in the 'body' array returned from GET /items/.
+
 For "how many items" questions: Use GET /items/ and count the returned array length.
 For framework questions: Use read_file to read backend/pyproject.toml or backend/app/main.py
 """
