@@ -32,7 +32,7 @@ Available tools:
 - list_files: {"tool": "list_files", "args": {"path": "wiki"}}
 - read_file: {"tool": "read_file", "args": {"path": "wiki/file.md"}}
 - search_file: {"tool": "search_file", "args": {"path": "wiki/file.md", "query": "keyword"}}
-- query_api: {"tool": "query_api", "args": {"method": "GET", "path": "/api/endpoint"}}
+- query_api: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
 
 When you have the answer, respond with ONLY:
 {"answer": "your answer text", "source": "wiki/file.md#section"}
@@ -42,6 +42,17 @@ IMPORTANT:
 - One tool call at a time
 - After search_file, provide final answer using the found information
 - Never repeat the same tool call
+
+API ENDPOINTS (use query_api for data questions):
+- GET /items/ - List all items (returns array of items with id, title, type)
+- GET /items/{id} - Get single item by ID
+- GET /analytics/scores - Get analytics scores
+- GET /analytics/completion-rate?lab=lab-XX - Get completion rate for a lab
+- GET /interactions/ - List all interactions
+- GET /learners/ - List all learners
+
+For "how many items" questions: Use GET /items/ and count the returned array length.
+For framework questions: Use read_file to read backend/pyproject.toml or backend/app/main.py
 """
 
 
@@ -194,21 +205,27 @@ def list_files(path: str) -> str:
 
 def query_api(method: str, path: str, body: str | None = None) -> str:
     """Call the backend API and return the response."""
-    print(f"Tool: query_api('{method}' {path})", file=sys.stderr)
+    import time
     
+    start_time = time.time()
+    print(f"[{time.time():.1f}s] Tool: query_api('{method}' {path})", file=sys.stderr)
+
     config = load_config()
     base_url = config["agent_api_base_url"]
     api_key = config["lms_api_key"]
     
+    print(f"[{time.time():.1f}s]   Base URL: {base_url}, API key: {api_key[:3]}...", file=sys.stderr)
+
     # Build full URL
     url = f"{base_url}{path}"
-    
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    
+
     try:
+        print(f"[{time.time():.1f}s]   Making {method} request to {url}...", file=sys.stderr)
         with httpx.Client(timeout=30.0) as client:
             if method.upper() == "GET":
                 response = client.get(url, headers=headers)
@@ -226,14 +243,16 @@ def query_api(method: str, path: str, body: str | None = None) -> str:
             else:
                 return f"Error: Unknown HTTP method '{method}'"
         
+        elapsed = time.time() - start_time
+        print(f"[{time.time():.1f}s]   API response in {elapsed:.2f}s: status={response.status_code}", file=sys.stderr)
+
         result = {
             "status_code": response.status_code,
             "body": response.text,
         }
         result_str = json.dumps(result)
-        print(f"  Status: {response.status_code}", file=sys.stderr)
         return result_str
-        
+
     except httpx.RequestError as e:
         return f"Error: API request failed - {e}"
     except json.JSONDecodeError as e:
@@ -253,6 +272,11 @@ TOOL_FUNCTIONS = {
 
 def execute_tool(name: str, arguments: dict) -> str:
     """Execute a tool and return the result."""
+    import time
+    
+    start_time = time.time()
+    print(f"[{time.time():.1f}s] >> Executing tool: {name}({arguments})", file=sys.stderr)
+    
     if name not in TOOL_FUNCTIONS:
         return f"Error: Unknown tool '{name}'"
 
@@ -261,31 +285,43 @@ def execute_tool(name: str, arguments: dict) -> str:
     # Extract arguments based on tool
     if name == "read_file":
         if "path" in arguments:
-            return func(arguments["path"])
+            result = func(arguments["path"])
+            elapsed = time.time() - start_time
+            print(f"[{time.time():.1f}s] << Tool {name} completed in {elapsed:.2f}s", file=sys.stderr)
+            return result
         return f"Error: Missing required argument 'path' for tool '{name}'"
-    
+
     elif name == "list_files":
         if "path" in arguments:
-            return func(arguments["path"])
+            result = func(arguments["path"])
+            elapsed = time.time() - start_time
+            print(f"[{time.time():.1f}s] << Tool {name} completed in {elapsed:.2f}s", file=sys.stderr)
+            return result
         return f"Error: Missing required argument 'path' for tool '{name}'"
-    
+
     elif name == "search_file":
         if "path" not in arguments:
             return f"Error: Missing required argument 'path' for tool '{name}'"
         if "query" not in arguments:
             return f"Error: Missing required argument 'query' for tool '{name}'"
-        return func(arguments["path"], arguments["query"])
-    
+        result = func(arguments["path"], arguments["query"])
+        elapsed = time.time() - start_time
+        print(f"[{time.time():.1f}s] << Tool {name} completed in {elapsed:.2f}s", file=sys.stderr)
+        return result
+
     elif name == "query_api":
         if "method" not in arguments:
             return f"Error: Missing required argument 'method' for tool '{name}'"
         if "path" not in arguments:
             return f"Error: Missing required argument 'path' for tool '{name}'"
-        
+
         method = arguments["method"]
         path = arguments["path"]
         body = arguments.get("body")
-        return func(method, path, body)
+        result = func(method, path, body)
+        elapsed = time.time() - start_time
+        print(f"[{time.time():.1f}s] << Tool {name} completed in {elapsed:.2f}s", file=sys.stderr)
+        return result
 
     return f"Error: Unknown tool '{name}'"
 
@@ -363,6 +399,8 @@ def parse_llm_response(content: str) -> dict | None:
 
 def call_llm(messages: list[dict], config: dict[str, str]) -> str:
     """Call the LLM API and return the content."""
+    import time
+    
     url = f"{config['llm_api_base']}/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -375,16 +413,40 @@ def call_llm(messages: list[dict], config: dict[str, str]) -> str:
         "temperature": 0,
     }
 
-    print(f"Calling LLM API with {len(messages)} messages...", file=sys.stderr)
+    start_time = time.time()
+    print(f"[{time.time():.1f}s] Calling LLM API at {url} with {len(messages)} messages...", file=sys.stderr)
+    print(f"[{time.time():.1f}s] Model: {config['llm_model']}", file=sys.stderr)
 
-    with httpx.Client(timeout=60.0) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+    # Retry logic for transient failures
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            
+            elapsed = time.time() - start_time
+            print(f"[{time.time():.1f}s] LLM API response received in {elapsed:.2f}s", file=sys.stderr)
 
-    # Handle case where content might be null
-    content = data["choices"][0]["message"].get("content") or ""
-    return content
+            # Handle case where content might be null
+            content = data["choices"][0]["message"].get("content") or ""
+            print(f"[{time.time():.1f}s] LLM content length: {len(content)} chars", file=sys.stderr)
+            return content
+        except httpx.RemoteProtocolError as e:
+            print(f"[{time.time():.1f}s] LLM API connection error (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
+            if attempt < max_retries - 1:
+                import time as time_module
+                time_module.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                raise
+        except httpx.ReadTimeout as e:
+            print(f"[{time.time():.1f}s] LLM API timeout (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
+            if attempt < max_retries - 1:
+                import time as time_module
+                time_module.sleep(2 ** attempt)
+            else:
+                raise
 
 
 def generate_answer_from_results(question: str, tool_calls: list[dict]) -> str:
@@ -394,27 +456,39 @@ def generate_answer_from_results(question: str, tool_calls: list[dict]) -> str:
         if call["tool"] == "search_file":
             result = call.get("result", "")
             # Extract the relevant lines from search results
-            if "Line " in result:
+            if "Line " in result and not result.startswith("Error") and not result.startswith("No matches"):
                 # Found search results with line numbers
-                lines = result.split('\n')
-                # Find the actual content lines (not line numbers)
+                # Extract content after line numbers (format: "Line N:\nN: content")
                 content_lines = []
-                for line in lines:
-                    if line.startswith('Line ') or ':' in line[:5]:
+                for line in result.split('\n'):
+                    # Skip lines that are just line number markers like "Line 49:"
+                    if line.startswith('Line '):
                         continue
-                    content_lines.append(line)
-                
+                    # Extract content after "N: " pattern
+                    if ': ' in line[:5]:
+                        # This is a line number prefix like "47:   - [Enable"
+                        content = line.split(': ', 1)[1] if ': ' in line else line
+                        content_lines.append(content)
+                    elif line.strip():
+                        content_lines.append(line)
+
                 if content_lines:
-                    return '\n'.join(content_lines[:10])
-    
+                    # Filter out empty lines and return meaningful content
+                    meaningful = [l for l in content_lines if l.strip() and len(l.strip()) > 5]
+                    if meaningful:
+                        return '\n'.join(meaningful[:15])
+
     # Fallback: use last read_file result
     for call in reversed(tool_calls):
         if call["tool"] == "read_file":
             result = call.get("result", "")
             if result and not result.startswith("Error"):
+                # Return first 500 chars as context
                 return result[:500]
-    
-    return "I found information but couldn't extract a clear answer."
+
+    # Last resort: describe what we found
+    tools_used = [c["tool"] for c in tool_calls]
+    return f"Found information using tools: {', '.join(tools_used)}. Check tool results for details."
 
 
 def run_agentic_loop(question: str, config: dict) -> dict:
@@ -425,6 +499,12 @@ def run_agentic_loop(question: str, config: dict) -> dict:
     3. If tool call, execute and append result, continue
     4. If final answer, return it
     """
+    import time
+    
+    loop_start = time.time()
+    print(f"\n[{time.time():.1f}s] === Starting agentic loop ===", file=sys.stderr)
+    print(f"[{time.time():.1f}s] Question: {question[:100]}...", file=sys.stderr)
+    
     # Initialize conversation history
     conversation = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -434,16 +514,16 @@ def run_agentic_loop(question: str, config: dict) -> dict:
     # Track all tool calls for output
     all_tool_calls = []
     last_answer = None
-    
+
     # Track seen tool calls to detect loops
     seen_tool_calls = set()
 
     for iteration in range(MAX_TOOL_CALLS):
-        print(f"\n=== Iteration {iteration + 1} ===", file=sys.stderr)
+        print(f"\n[{time.time():.1f}s] === Iteration {iteration + 1}/{MAX_TOOL_CALLS} (elapsed: {time.time() - loop_start:.1f}s) ===", file=sys.stderr)
 
         # Call LLM
         content = call_llm(conversation, config)
-        print(f"LLM response: {content[:200]}...", file=sys.stderr)
+        print(f"[{time.time():.1f}s] LLM response: {content[:200]}...", file=sys.stderr)
 
         # Parse response
         parsed = parse_llm_response(content)
