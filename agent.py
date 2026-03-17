@@ -25,39 +25,44 @@ MAX_TOOL_CALLS = 12
 # System prompt for the system agent
 SYSTEM_PROMPT = """You are a documentation and system assistant.
 
-You have four tools. To use a tool, respond with ONLY this JSON format:
+You have four tools. Respond with ONLY JSON:
 {"tool": "tool_name", "args": {"arg_name": "value"}}
 
-Available tools:
-- list_files: {"tool": "list_files", "args": {"path": "wiki"}}
-- read_file: {"tool": "read_file", "args": {"path": "wiki/file.md"}}
-- search_file: {"tool": "search_file", "args": {"path": "wiki/file.md", "query": "keyword"}}
-- query_api: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
+When you have the final answer, respond with:
+{"answer": "your answer text", "source": "wiki/file.md#section or API: GET /path"}
 
-When you have the answer, respond with ONLY:
-{"answer": "your answer text", "source": "wiki/file.md#section"}
+STRATEGIES FOR COMPLEX QUESTIONS:
+
+1. DATA QUERIES (How many items/learners?):
+   - Use query_api to get the full list (e.g., GET /items/).
+   - Count the number of elements in the returned JSON array. Be precise.
+
+2. BUG DIAGNOSIS (Why does it crash? What is risky?):
+   - Step 1: Use query_api to see the error response/status code.
+   - Step 2: Use list_files to find relevant source code (usually in backend/app/routers/).
+   - Step 3: Use read_file to examine the code. Look for:
+     - Division by zero (e.g., a / b where b could be 0).
+     - Sorting or operations on lists that might contain None.
+     - Missing error handling (try/except).
+   - Step 4: Identify the EXACT line or function causing the issue.
+
+3. ARCHITECTURE/REQUEST PATH (How does X work?):
+   - Read multiple files to trace the path:
+     - docker-compose.yml (ports and services)
+     - Caddyfile or nginx.conf (proxy logic)
+     - backend/app/main.py (FastAPI setup)
+     - backend/app/routers/ (business logic)
+   - Explain how a request flows from the entry point to the database.
+
+4. COMPARING COMPONENTS (ETL vs API):
+   - Read the source code for BOTH components before answering.
+   - Look for differences in try/except blocks and logging.
 
 IMPORTANT:
-- Output ONLY JSON - no explanations outside JSON
-- One tool call at a time
-- After search_file, provide final answer using the found information
-- Never repeat the same tool call
-
-API ENDPOINTS (use query_api for data questions):
-- GET /items/ - List all items (returns array of items with id, title, type)
-- GET /items/{id} - Get single item by ID
-- GET /analytics/scores - Get analytics scores
-- GET /analytics/completion-rate?lab=lab-XX - Get completion rate for a lab
-- GET /interactions/ - List all interactions
-- GET /learners/ - List all learners
-
-SPECIAL CASES:
-- If asked "what code returns without auth", try query_api with a dummy key or mention the logic.
-- For bug diagnosis: 1) Query the API endpoint, 2) Read the error in response, 3) Use read_file on backend/app/routers/... to find the bug in code.
-- To count items: count the items in the 'body' array returned from GET /items/.
-
-For "how many items" questions: Use GET /items/ and count the returned array length.
-For framework questions: Use read_file to read backend/pyproject.toml or backend/app/main.py
+- Output ONLY JSON.
+- One tool call at a time.
+- If the first tool call doesn't give enough info, call another one.
+- Cite your sources: file paths or API endpoints.
 """
 
 
@@ -115,7 +120,7 @@ def is_safe_path(requested_path: str) -> tuple[bool, Path]:
     return True, full_path
 
 
-def read_file(path: str, max_chars: int = 15000) -> str:
+def read_file(path: str, max_chars: int = 25000) -> str:
     """Read a file from the project repository."""
     print(f"Tool: read_file('{path}')", file=sys.stderr)
 
