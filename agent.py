@@ -57,14 +57,15 @@ For framework questions: Use read_file to read backend/pyproject.toml or backend
 
 
 def load_config() -> dict:
-    """Load configuration from both .env files."""
-    # Load LLM config from .env.agent.secret
-    llm_env_path = Path(__file__).parent / ".env.agent.secret"
-    load_dotenv(llm_env_path, override=False)
+    """Load configuration from environment variables and .env files."""
+    # Load from default .env if exists
+    load_dotenv()
     
-    # Load LMS config from .env.docker.secret
-    lms_env_path = Path(__file__).parent / ".env.docker.secret"
-    load_dotenv(lms_env_path, override=False)
+    # Also try to load from specific secret files
+    for env_file in [".env.agent.secret", ".env.docker.secret", ".env.agent", ".env.docker"]:
+        env_path = Path(__file__).parent / env_file
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
 
     config = {
         # LLM config
@@ -76,16 +77,10 @@ def load_config() -> dict:
         "agent_api_base_url": os.getenv("AGENT_API_BASE_URL", "http://localhost:42002"),
     }
 
-    # Validate LLM config
+    # Only warn about missing config, don't exit
     missing_llm = [k for k in ["llm_api_base", "llm_api_key", "llm_model"] if not config.get(k)]
     if missing_llm:
-        print(f"Error: Missing LLM config: {', '.join(missing_llm)}", file=sys.stderr)
-        sys.exit(1)
-
-    # Validate LMS config
-    if not config.get("lms_api_key"):
-        print("Error: Missing LMS_API_KEY in .env.docker.secret", file=sys.stderr)
-        sys.exit(1)
+        print(f"Warning: Missing LLM config: {', '.join(missing_llm)}", file=sys.stderr)
 
     return config
 
@@ -214,6 +209,9 @@ def query_api(method: str, path: str, body: str | None = None) -> str:
     base_url = config["agent_api_base_url"]
     api_key = config["lms_api_key"]
     
+    if not api_key:
+        return "Error: LMS_API_KEY is not configured. Cannot call API."
+
     print(f"[{time.time():.1f}s]   Base URL: {base_url}, API key: {api_key[:3]}...", file=sys.stderr)
 
     # Build full URL
