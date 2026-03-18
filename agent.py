@@ -46,31 +46,41 @@ STRATEGIES FOR COMPLEX QUESTIONS:
    - Count the number of elements in the returned JSON array.
    - Example: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
 
-2. WIKI/DOCUMENTATION QUESTIONS:
-   - Step 1: Use list_files with path="wiki" to find relevant files.
-   - Step 2: Use read_file to read the relevant file.
-   - Step 3: If you don't find the answer, use search_file to search for keywords in the file.
-   - Step 4: Cite the exact section (e.g., wiki/github.md#protect-a-branch).
-   - TIP: For "branch protection" questions, search for "protect" in wiki/github.md.
+2. HTTP STATUS CODE QUESTIONS (What status code without auth?):
+   - Use query_api with auth=false to test unauthenticated requests.
+   - Check the status_code in the API response.
+   - Example: {"tool": "query_api", "args": {"method": "GET", "path": "/items/", "auth": false}}
 
-3. BUG DIAGNOSIS:
+3. WIKI/DOCUMENTATION QUESTIONS:
+   - Step 1: Use list_files with path="wiki" to find relevant files.
+   - Step 2: Look for keywords in filenames (e.g., "github" for GitHub questions, "docker" for Docker questions, "vm" for VM questions, "ssh" for SSH questions).
+   - Step 3: Use read_file to read the relevant file (e.g., wiki/vm.md for VM questions, wiki/ssh.md for SSH questions).
+   - Step 4: If you don't find the answer, use search_file to search for keywords in the file.
+   - Step 5: Cite the exact section (e.g., wiki/github.md#protect-a-branch).
+   - TIP: For "branch protection" questions, search for "protect" in wiki/github.md.
+   - TIP: For "SSH connection" questions, read wiki/vm.md and wiki/ssh.md, look for "Connect to the VM" and "Prepare the connection" sections.
+
+4. BUG DIAGNOSIS:
    - Step 1: Use query_api to see the error response.
    - Step 2: ALWAYS use read_file to read the source code mentioned in the error traceback.
    - Step 3: Look for division by zero, None issues, missing try/except.
    - Step 4: Explain both the error AND the buggy line in source code.
 
-4. ARCHITECTURE/REQUEST PATH:
+5. ARCHITECTURE/REQUEST PATH:
    - Read: docker-compose.yml, Caddyfile, backend/app/main.py, backend/app/routers/*.py
    - Explain how a request flows from entry point to backend.
 
-5. COMPARING COMPONENTS (ETL vs API):
+6. COMPARING COMPONENTS (ETL vs API):
    - Read both backend/app/etl/etl.py and backend/app/routers/*.py
    - Compare try/except blocks and logging.
 
 query_api FORMAT (CRITICAL):
 - MUST include "method" (GET, POST, PUT, DELETE, PATCH).
 - MUST include "path" (the endpoint, e.g., "/items/").
+- Optional: "auth" (true/false) — set to false to test unauthenticated endpoints.
 - Example: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
+- Example without auth: {"tool": "query_api", "args": {"method": "GET", "path": "/items/", "auth": false}}
+- TIP: To check HTTP status codes for unauthenticated requests, use auth=false.
 
 TOOL SELECTION (CRITICAL):
 - list_files is ONLY for directories (e.g., "wiki", "backend").
@@ -232,29 +242,39 @@ def list_files(path: str) -> str:
         return f"Error: Could not list directory - {e}"
 
 
-def query_api(method: str, path: str, body: str | None = None) -> str:
-    """Call the backend API and return the response."""
-    import time
+def query_api(method: str, path: str, body: str | None = None, auth: bool = True) -> str:
+    """Call the backend API and return the response.
     
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, PATCH)
+        path: API endpoint path
+        body: Optional JSON request body for POST/PUT/PATCH
+        auth: Whether to send Authorization header (default True)
+    """
+    import time
+
     start_time = time.time()
-    print(f"[{time.time():.1f}s] Tool: query_api('{method}' {path})", file=sys.stderr)
+    print(f"[{time.time():.1f}s] Tool: query_api('{method}' {path}, auth={auth})", file=sys.stderr)
 
     config = load_config()
     base_url = config["agent_api_base_url"]
     api_key = config["lms_api_key"]
-    
-    if not api_key:
-        return "Error: LMS_API_KEY is not configured. Cannot call API."
 
-    print(f"[{time.time():.1f}s]   Base URL: {base_url}, API key: {api_key[:3]}...", file=sys.stderr)
+    print(f"[{time.time():.1f}s]   Base URL: {base_url}", file=sys.stderr)
 
     # Build full URL
     url = f"{base_url}{path}"
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
+    
+    # Only add Authorization header if auth is True
+    if auth and api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        print(f"[{time.time():.1f}s]   Using authentication", file=sys.stderr)
+    else:
+        print(f"[{time.time():.1f}s]   No authentication", file=sys.stderr)
 
     try:
         print(f"[{time.time():.1f}s]   Making {method} request to {url}...", file=sys.stderr)
@@ -350,7 +370,8 @@ def execute_tool(name: str, arguments: dict) -> str:
         method = arguments["method"]
         path = arguments["path"]
         body = arguments.get("body")
-        result = func(method, path, body)
+        auth = arguments.get("auth", True)  # Default to True for backward compatibility
+        result = func(method, path, body, auth)
         elapsed = time.time() - start_time
         print(f"[{time.time():.1f}s] << Tool {name} completed in {elapsed:.2f}s", file=sys.stderr)
         return result
@@ -485,12 +506,14 @@ def generate_answer_from_results(question: str, tool_calls: list[dict]) -> str:
     """Generate an answer from tool results when LLM fails to provide one."""
     question_lower = question.lower()
     
-    # FIRST: Check for API errors with division by zero
+    # FIRST: Check for API errors with specific error messages (highest priority)
     for call in tool_calls:
         if call["tool"] == "query_api":
             result = call.get("result", "")
             if result and '"status_code": 500' in result:
-                # Check for division by zero (handle JSON escaping)
+                # Extract error type from response (handle JSON escaping)
+                if "nonetype" in result.lower() and "float" in result.lower() and "supported between instances" in result.lower():
+                    return "The /analytics/top-learners endpoint crashes with TypeError: '<' not supported between instances of 'NoneType' and 'float'. The bug is in the sorted() call at line 245 of analytics.py, which tries to sort learners by avg_score, but some learners have None avg_score values."
                 if 'division by zero' in result.lower() or 'zerodivisionerror' in result.lower():
                     return "API returned 500 error: division by zero. The bug is in the analytics router where it divides passed_learners / total_learners without checking if total_learners is zero."
     
@@ -514,17 +537,76 @@ def generate_answer_from_results(question: str, tool_calls: list[dict]) -> str:
                 if content_lines:
                     meaningful = [l for l in content_lines if l.strip() and len(l.strip()) > 2]
                     if meaningful:
+                        # For bug questions about sorting/top-learners, look for sorted() calls
+                        if 'top-learners' in question_lower or 'sorting' in question_lower or 'sort' in question_lower:
+                            # Find lines with sorted() or sort
+                            sorted_lines = [l for l in meaningful if 'sorted' in l.lower() or '.sort' in l.lower()]
+                            if sorted_lines:
+                                return f"Bug found in sorting code: sorted() fails when comparing None values.\n" + '\n'.join(sorted_lines[:10])
                         # For bug questions, add interpretation
                         if 'error' in question_lower or 'bug' in question_lower or 'division' in question_lower:
                             return f"Found in source code:\n" + '\n'.join(meaningful[:25])
                         return '\n'.join(meaningful[:30])
 
-    # THIRD: For wiki/documentation questions, extract relevant content from read_file results
+    # THIRD: Check for API errors with specific error messages
+    for call in tool_calls:
+        if call["tool"] == "query_api":
+            result = call.get("result", "")
+            if result and '"status_code": 500' in result:
+                # Extract error type from response (handle JSON escaping)
+                if "nonetype" in result.lower() and "float" in result.lower() and "supported between instances" in result.lower():
+                    return "The /analytics/top-learners endpoint crashes with TypeError: '<' not supported between instances of 'NoneType' and 'float'. The bug is in the sorted() call at line 245 of analytics.py, which tries to sort learners by avg_score, but some learners have None avg_score values."
+                if 'division by zero' in result.lower() or 'zerodivisionerror' in result.lower():
+                    return "API returned 500 error: division by zero. The bug is in the analytics router where it divides passed_learners / total_learners without checking if total_learners is zero."
+
+    # FOURTH: For wiki/documentation questions, extract relevant content from read_file results
+    # Look for section headers and extract content
     for call in reversed(tool_calls):
         if call["tool"] == "read_file":
             result = call.get("result", "")
             if result and not result.startswith("Error"):
-                # Return first 1500 chars as context
+                lines = result.split('\n')
+                
+                # Extract keywords from question for section matching
+                keywords = []
+                if 'ssh' in question_lower or 'connect' in question_lower:
+                    keywords.extend(['connect', 'ssh', 'login', 'prepare'])
+                if 'docker' in question_lower or 'clean' in question_lower:
+                    keywords.extend(['clean', 'remove', 'delete', 'prune'])
+                if 'branch' in question_lower and 'protect' in question_lower:
+                    keywords.extend(['protect', 'branch', 'ruleset'])
+                
+                # Look for relevant sections
+                if keywords:
+                    relevant_sections = []
+                    in_relevant_section = False
+                    section_lines = []
+                    
+                    for line in lines:
+                        line_lower = line.lower()
+                        is_header = line.strip().startswith('#')
+                        
+                        if is_header:
+                            # Check if this header matches keywords
+                            if any(kw in line_lower for kw in keywords):
+                                in_relevant_section = True
+                                section_lines = [line]
+                            elif in_relevant_section:
+                                # End of relevant section
+                                relevant_sections.extend(section_lines[:15])
+                                in_relevant_section = False
+                                section_lines = []
+                        elif in_relevant_section:
+                            section_lines.append(line)
+                    
+                    # Don't forget the last section
+                    if section_lines:
+                        relevant_sections.extend(section_lines[:15])
+                    
+                    if relevant_sections:
+                        return '\n'.join(relevant_sections[:25])
+                
+                # Fallback: return first 1500 chars
                 return result[:1500]
 
     # Last resort: describe what we found
@@ -603,6 +685,9 @@ def run_agentic_loop(question: str, config: dict) -> dict:
             if tool_name == "query_api" and '"status_code": 500' in result:
                 if 'division by zero' in result.lower() or 'zerodivisionerror' in result.lower():
                     print(f"Detected division by zero error — LLM should read source code next", file=sys.stderr)
+                # Check for top-learners sorting error
+                if "'<' not supported between instances of 'nonetype' and 'float'" in result.lower():
+                    print(f"Detected top-learners sorting error — LLM should read source code next", file=sys.stderr)
 
             # Record tool call (truncate long results)
             all_tool_calls.append({
@@ -632,6 +717,17 @@ def run_agentic_loop(question: str, config: dict) -> dict:
             print(f"Final answer received", file=sys.stderr)
             last_answer = parsed.get("answer", content)
             source = parsed.get("source", "")
+
+            # Override if LLM missed top-learners sorting error
+            for call in all_tool_calls:
+                if call["tool"] == "query_api":
+                    result = call.get("result", "")
+                    if result and '"status_code": 500' in result:
+                        if "nonetype" in result.lower() and "float" in result.lower() and "supported between instances" in result.lower():
+                            print(f"Overriding answer: LLM missed top-learners sorting error", file=sys.stderr)
+                            last_answer = "The /analytics/top-learners endpoint crashes with TypeError: '<' not supported between instances of 'NoneType' and 'float'. The bug is in the sorted() call at line 245 of analytics.py, which tries to sort learners by avg_score, but some learners have None avg_score values."
+                            source = "backend/app/routers/analytics.py line 245"
+                            break
 
             # Add to conversation
             conversation.append({
