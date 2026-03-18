@@ -169,11 +169,61 @@ class TestTask3SystemAgent:
         assert "answer" in output, "Missing 'answer' field"
         assert "tool_calls" in output, "Missing 'tool_calls' field"
 
-        # Check that query_api was used (to query the database)
+        # Check that query_api was used
         tool_calls = output["tool_calls"]
         tools_used = {call["tool"] for call in tool_calls}
+        assert "query_api" in tools_used, f"Expected query_api for data question, got: {tools_used}"
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_status_code(self):
+        """Test status code question expects query_api with auth=False."""
+        result = subprocess.run(
+            ["uv", "run", "agent.py", "What HTTP status code does the API return for /items/ without auth?"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        # Check exit code
+        assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+        # Parse stdout as JSON
+        output = json.loads(result.stdout)
+
+        # Check that query_api was used with auth=False
+        tool_calls = output["tool_calls"]
+        query_api_calls = [c for c in tool_calls if c["tool"] == "query_api"]
+        assert len(query_api_calls) > 0, "Expected query_api call"
         
-        # The agent should try to use query_api for data questions
-        # Even if it doesn't find the right endpoint, it should attempt
-        assert "query_api" in tools_used, \
-            f"Expected query_api for data question, got: {tools_used}"
+        # Check that at least one call has auth=False or the agent reasoned about it
+        # Note: Depending on the API, it might return 200 or 401. 
+        # The test verifies that the agent attempted unauthenticated access if needed.
+        unauth_calls = [c for c in query_api_calls if c.get("args", {}).get("auth") is False]
+        assert len(unauth_calls) > 0, "Expected query_api to be called with auth=False"
+
+    @pytest.mark.asyncio
+    async def test_top_learners_bug_diagnosis(self):
+        """Test bug diagnosis expects query_api and source code reading."""
+        result = subprocess.run(
+            ["uv", "run", "agent.py", "What bug exists in the /analytics/top-learners endpoint?"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        # Check exit code
+        assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+        # Parse stdout as JSON
+        output = json.loads(result.stdout)
+
+        # Check that query_api and read_file/search_file were used
+        tool_calls = output["tool_calls"]
+        tools_used = {call["tool"] for call in tool_calls}
+        assert "query_api" in tools_used, "Expected query_api to reproduce the bug"
+        assert "read_file" in tools_used or "search_file" in tools_used, "Expected file reading to diagnose the bug"
+
+        # Check that answer mentions sorting or None values
+        answer = output.get("answer", "").lower()
+        assert "sort" in answer or "none" in answer or "comparison" in answer, \
+            f"Expected answer to mention sorting or None values, got: {output.get('answer')}"
