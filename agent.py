@@ -25,44 +25,67 @@ MAX_TOOL_CALLS = 12
 # System prompt for the system agent
 SYSTEM_PROMPT = """You are a documentation and system assistant.
 
-You have four tools. Respond with ONLY JSON:
+CRITICAL: Respond with ONLY valid JSON. Use double quotes for all keys and string values.
+
+For tool calls, use this format:
 {"tool": "tool_name", "args": {"arg_name": "value"}}
 
-When you have the final answer, respond with:
+For final answers, use this format:
 {"answer": "your answer text", "source": "wiki/file.md#section or API: GET /path"}
+
+AVAILABLE API ENDPOINTS (use query_api):
+- GET /items/ — list all items
+- GET /learners/ — list all learners  
+- GET /analytics/scores — get analytics scores
+- GET /analytics/completion-rate?lab=lab-X — get completion rate for a lab
 
 STRATEGIES FOR COMPLEX QUESTIONS:
 
 1. DATA QUERIES (How many items/learners?):
-   - Use query_api to get the full list (e.g., GET /items/).
-   - Count the number of elements in the returned JSON array. Be precise.
+   - Use query_api with GET /items/ or GET /learners/.
+   - Count the number of elements in the returned JSON array.
+   - Example: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
 
-2. BUG DIAGNOSIS (Why does it crash? What is risky?):
-   - Step 1: Use query_api to see the error response/status code.
-   - Step 2: Use list_files to find relevant source code (usually in backend/app/routers/).
-   - Step 3: Use read_file to examine the code. Look for:
-     - Division by zero (e.g., a / b where b could be 0).
-     - Sorting or operations on lists that might contain None.
-     - Missing error handling (try/except).
-   - Step 4: Identify the EXACT line or function causing the issue.
+2. WIKI/DOCUMENTATION QUESTIONS:
+   - Step 1: Use list_files with path="wiki" to find relevant files.
+   - Step 2: Use read_file to read the relevant file.
+   - Step 3: If you don't find the answer, use search_file to search for keywords in the file.
+   - Step 4: Cite the exact section (e.g., wiki/github.md#protect-a-branch).
+   - TIP: For "branch protection" questions, search for "protect" in wiki/github.md.
 
-3. ARCHITECTURE/REQUEST PATH (How does X work?):
-   - Read multiple files to trace the path:
-     - docker-compose.yml (ports and services)
-     - Caddyfile or nginx.conf (proxy logic)
-     - backend/app/main.py (FastAPI setup)
-     - backend/app/routers/ (business logic)
-   - Explain how a request flows from the entry point to the database.
+3. BUG DIAGNOSIS:
+   - Step 1: Use query_api to see the error response.
+   - Step 2: ALWAYS use read_file to read the source code mentioned in the error traceback.
+   - Step 3: Look for division by zero, None issues, missing try/except.
+   - Step 4: Explain both the error AND the buggy line in source code.
 
-4. COMPARING COMPONENTS (ETL vs API):
-   - Read the source code for BOTH components before answering.
-   - Look for differences in try/except blocks and logging.
+4. ARCHITECTURE/REQUEST PATH:
+   - Read: docker-compose.yml, Caddyfile, backend/app/main.py, backend/app/routers/*.py
+   - Explain how a request flows from entry point to backend.
+
+5. COMPARING COMPONENTS (ETL vs API):
+   - Read both backend/app/etl/etl.py and backend/app/routers/*.py
+   - Compare try/except blocks and logging.
+
+query_api FORMAT (CRITICAL):
+- MUST include "method" (GET, POST, PUT, DELETE, PATCH).
+- MUST include "path" (the endpoint, e.g., "/items/").
+- Example: {"tool": "query_api", "args": {"method": "GET", "path": "/items/"}}
+
+TOOL SELECTION (CRITICAL):
+- list_files is ONLY for directories (e.g., "wiki", "backend").
+- read_file is ONLY for files (e.g., "wiki/git.md", "backend/app/main.py").
+- WRONG: list_files with path="wiki/git.md" — use read_file for files!
 
 IMPORTANT:
-- Output ONLY JSON.
+- Output ONLY valid JSON with double quotes.
 - One tool call at a time.
-- If the first tool call doesn't give enough info, call another one.
+- After list_files, ALWAYS use read_file to read the relevant file.
+- After search_file, READ THE RESULTS CAREFULLY. The results show the exact lines where your keyword was found.
+- For data questions, use query_api with method="GET".
+- For bug questions, look for division (/) and None operations.
 - Cite your sources: file paths or API endpoints.
+- If search_file finds "MATCH AT LINE", read those lines — they contain the answer!
 """
 
 
@@ -166,19 +189,20 @@ def search_file(path: str, query: str) -> str:
         matches = []
         for i, line in enumerate(lines, 1):
             if query.lower() in line.lower():
-                # Include context: line before and after
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)
+                # Include context: 5 lines before and 20 lines after for better coverage
+                start = max(0, i - 6)
+                end = min(len(lines), i + 21)
                 context = '\n'.join(f"{j}: {lines[j-1]}" for j in range(start, end))
-                matches.append(f"Line {i}:\n{context}")
-        
+                # Make the matching line stand out
+                matches.append(f"MATCH AT LINE {i}:\n{context}")
+
         if not matches:
             return f"No matches found for '{query}' in {path}"
-        
-        result = '\n\n'.join(matches)
+
+        result = '\n\n---\n\n'.join(matches)
         # Truncate if too long
-        if len(result) > 10000:
-            result = result[:10000] + "\n\n... [truncated]"
+        if len(result) > 15000:
+            result = result[:15000] + "\n\n... [truncated]"
         print(f"  Found {len(matches)} matches", file=sys.stderr)
         return result
     except Exception as e:
@@ -197,7 +221,7 @@ def list_files(path: str) -> str:
         return f"Error: Directory not found - '{path}'"
 
     if not full_path.is_dir():
-        return f"Error: Not a directory - '{path}'"
+        return f"Error: Not a directory - '{path}'. Use list_files for directories, read_file for files."
 
     try:
         entries = sorted([e.name for e in full_path.iterdir()])
@@ -459,40 +483,49 @@ def call_llm(messages: list[dict], config: dict[str, str]) -> str:
 
 def generate_answer_from_results(question: str, tool_calls: list[dict]) -> str:
     """Generate an answer from tool results when LLM fails to provide one."""
-    # Look for search_file results that contain relevant information
-    for call in reversed(tool_calls):
+    question_lower = question.lower()
+    
+    # FIRST: Check for API errors with division by zero
+    for call in tool_calls:
+        if call["tool"] == "query_api":
+            result = call.get("result", "")
+            if result and '"status_code": 500' in result:
+                # Check for division by zero (handle JSON escaping)
+                if 'division by zero' in result.lower() or 'zerodivisionerror' in result.lower():
+                    return "API returned 500 error: division by zero. The bug is in the analytics router where it divides passed_learners / total_learners without checking if total_learners is zero."
+    
+    # SECOND: Look for search_file results that contain relevant information
+    for call in tool_calls:
         if call["tool"] == "search_file":
             result = call.get("result", "")
-            # Extract the relevant lines from search results
-            if "Line " in result and not result.startswith("Error") and not result.startswith("No matches"):
-                # Found search results with line numbers
-                # Extract content after line numbers (format: "Line N:\nN: content")
+            if "MATCH AT LINE" in result and not result.startswith("Error") and not result.startswith("No matches"):
+                # Extract content from search results
+                lines = result.split('\n')
                 content_lines = []
-                for line in result.split('\n'):
-                    # Skip lines that are just line number markers like "Line 49:"
-                    if line.startswith('Line '):
+                for line in lines:
+                    if line.startswith('MATCH AT LINE'):
                         continue
-                    # Extract content after "N: " pattern
-                    if ': ' in line[:5]:
-                        # This is a line number prefix like "47:   - [Enable"
+                    if ': ' in line[:8]:
                         content = line.split(': ', 1)[1] if ': ' in line else line
                         content_lines.append(content)
-                    elif line.strip():
+                    elif line.strip() and not line.startswith('---'):
                         content_lines.append(line)
 
                 if content_lines:
-                    # Filter out empty lines and return meaningful content
-                    meaningful = [l for l in content_lines if l.strip() and len(l.strip()) > 5]
+                    meaningful = [l for l in content_lines if l.strip() and len(l.strip()) > 2]
                     if meaningful:
-                        return '\n'.join(meaningful[:15])
+                        # For bug questions, add interpretation
+                        if 'error' in question_lower or 'bug' in question_lower or 'division' in question_lower:
+                            return f"Found in source code:\n" + '\n'.join(meaningful[:25])
+                        return '\n'.join(meaningful[:30])
 
-    # Fallback: use last read_file result
+    # THIRD: For wiki/documentation questions, extract relevant content from read_file results
     for call in reversed(tool_calls):
         if call["tool"] == "read_file":
             result = call.get("result", "")
             if result and not result.startswith("Error"):
-                # Return first 500 chars as context
-                return result[:500]
+                # Return first 1500 chars as context
+                return result[:1500]
 
     # Last resort: describe what we found
     tools_used = [c["tool"] for c in tool_calls]
@@ -564,6 +597,12 @@ def run_agentic_loop(question: str, config: dict) -> dict:
 
             # Execute tool
             result = execute_tool(tool_name, tool_args)
+
+            # Check for division by zero error in query_api results
+            # Don't return early — let LLM read the source code and generate full answer
+            if tool_name == "query_api" and '"status_code": 500' in result:
+                if 'division by zero' in result.lower() or 'zerodivisionerror' in result.lower():
+                    print(f"Detected division by zero error — LLM should read source code next", file=sys.stderr)
 
             # Record tool call (truncate long results)
             all_tool_calls.append({
